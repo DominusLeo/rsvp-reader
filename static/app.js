@@ -1,6 +1,6 @@
 import {
   splitWord, wordDelayMs, sentenceStart, nextSentenceStart,
-  pageOf, nextPageStart, prevPageStart,
+  pageOf, nextPageStart, prevPageStart, nextStart, prevStart, chapterAt, paragraphWindow,
 } from "./rsvp-core.js";
 
 const WPM_STEP = 25;
@@ -11,7 +11,8 @@ const FONT_STEP = 4;
 const FONT_MIN = 24;
 const FONT_MAX = 120;
 const SAVE_EVERY_WORDS = 50;
-const CONTEXT_WORDS = 40;
+const CONTEXT_WORDS = 40; // fallback preview when the book has no paragraph data
+const PARAGRAPH_PREVIEW_WORDS = 120;
 const OCR_POLL_MS = 1000;
 
 const $ = (id) => document.getElementById(id);
@@ -20,7 +21,10 @@ const ui = {
   list: $("book-list"), libStatus: $("library-status"),
   title: $("book-title"), position: $("position"), back: $("back"),
   word: $("word"), wpmLabel: $("wpm-label"), context: $("context"),
-  status: $("reader-status"), progress: $("progress"),
+  contextChapter: $("context-chapter"), contextText: $("context-text"),
+  status: $("reader-status"), progress: $("progress"), marks: $("chapter-marks"),
+  chapterGroup: $("chapter-group"), chapter: $("chapter"), chapterPrev: $("chapter-prev"), chapterNext: $("chapter-next"),
+  paraPrev: $("para-prev"), paraNext: $("para-next"),
   ocrPanel: $("ocr-panel"), ocrStart: $("ocr-start"), ocrProgress: $("ocr-progress"), ocrText: $("ocr-text"),
   pagePrev: $("page-prev"), prev: $("prev"), wordPrev: $("word-prev"), play: $("play"),
   wordNext: $("word-next"), next: $("next"), pageNext: $("page-next"),
@@ -30,6 +34,7 @@ const ui = {
 
 const state = {
   books: [], loading: false, book: null, words: [], pageStarts: [], approxPages: false,
+  paraStarts: [], chapters: [], chapterIdx: -1,
   idx: 0, wpm: DEFAULT_WPM, timer: null, sinceSave: 0, ocrPoll: null,
 };
 
@@ -112,6 +117,8 @@ async function openBook(book) {
   showWord("");
   state.book = book;
   state.words = [];
+  state.chapters = [];
+  renderChapters();
   try {
     const res = await fetch(`/api/book/${book.id}`);
     const data = await res.json();
@@ -124,6 +131,8 @@ async function openBook(book) {
     }
     state.words = data.words;
     state.pageStarts = data.page_starts;
+    state.paraStarts = data.para_starts ?? [];
+    state.chapters = data.chapters ?? [];
     // djvutxt skips pages without text, so DjVu page numbers are approximate unless OCR'd.
     state.approxPages = book.format.startsWith("djv") && !data.ocr;
     const saved = loadProgress(book.id);
@@ -132,6 +141,7 @@ async function openBook(book) {
     ui.progress.max = String(state.words.length - 1);
     const failed = data.ocr_failed_pages ? ` Не розпізнано сторінок: ${data.ocr_failed_pages} — повторний OCR спробує їх ще раз.` : "";
     setStatus(data.ocr ? `Текст розпізнано OCR — можливі помилки розпізнавання.${failed}` : "");
+    renderChapters();
     render();
     showContext();
   } catch (err) {
@@ -158,16 +168,56 @@ function render() {
   const pct = ((state.idx / Math.max(state.words.length - 1, 1)) * 100).toFixed(1);
   const tilde = state.approxPages ? "~" : "";
   ui.position.textContent = `стор. ${tilde}${pageOf(state.pageStarts, state.idx)} / ${state.pageStarts.length} · ${pct}%`;
+  const ci = chapterAt(state.chapters, state.idx);
+  if (ci !== state.chapterIdx) { // touch the select only when the chapter changes
+    state.chapterIdx = ci;
+    ui.chapter.value = String(ci);
+  }
 }
 
+// ---------- chapters ----------
+function renderChapters() {
+  const chapters = state.chapters;
+  state.chapterIdx = -2; // force the next render() to sync the select
+  ui.chapterGroup.hidden = !chapters.length;
+  const last = Math.max(state.words.length - 1, 1);
+  ui.marks.replaceChildren(...chapters.map((c, i) => {
+    const mark = document.createElement("span");
+    mark.style.left = `${(c.word / last) * 100}%`;
+    mark.title = c.title;
+    mark.dataset.i = String(i);
+    if (c.level > 1) mark.className = "sub";
+    return mark;
+  }));
+  const before = new Option("— до першої глави —", "-1");
+  before.disabled = true;
+  ui.chapter.replaceChildren(before, ...chapters.map((c, i) =>
+    new Option(`${"   ".repeat(Math.max(c.level - 1, 0))}${c.title}`, String(i))));
+}
+
+function goChapter(i) {
+  const c = state.chapters[i];
+  if (c) jump(c.word);
+}
+
+// ---------- context preview (on pause) ----------
 function showContext() {
-  const from = Math.max(0, sentenceStart(state.words, state.idx) - CONTEXT_WORDS / 2);
-  const to = Math.min(state.words.length, state.idx + CONTEXT_WORDS);
-  ui.context.replaceChildren();
+  let from, to;
+  if (state.paraStarts.length) {
+    [from, to] = paragraphWindow(state.paraStarts, state.idx, state.words.length, PARAGRAPH_PREVIEW_WORDS);
+  } else {
+    from = Math.max(0, sentenceStart(state.words, state.idx) - CONTEXT_WORDS / 2);
+    to = Math.min(state.words.length, state.idx + CONTEXT_WORDS);
+  }
+  const chapter = state.chapters[chapterAt(state.chapters, state.idx)];
+  ui.contextChapter.textContent = chapter ? chapter.title : "";
+  ui.contextChapter.hidden = !chapter;
+  ui.contextText.replaceChildren();
   for (let i = from; i < to; i++) {
-    const node = i === state.idx ? document.createElement("mark") : document.createTextNode("");
+    const node = document.createElement(i === state.idx ? "mark" : "span");
     node.textContent = state.words[i];
-    ui.context.append(node, " ");
+    node.dataset.i = String(i);
+    ui.contextText.append(node, " ");
   }
   ui.context.hidden = false;
 }
@@ -212,6 +262,11 @@ const nav = {
     jump(state.idx > start ? start : sentenceStart(state.words, Math.max(start - 1, 0)));
   },
   sentenceNext: () => jump(nextSentenceStart(state.words, state.idx)),
+  // without paragraph data (old cache) the paragraph keys move by sentence
+  paraPrev: () => (state.paraStarts.length ? jump(prevStart(state.paraStarts, state.idx)) : nav.sentencePrev()),
+  paraNext: () => (state.paraStarts.length ? jump(nextStart(state.paraStarts, state.idx)) : nav.sentenceNext()),
+  chapterPrev: () => state.chapters.length && jump(prevStart(state.chapters.map((c) => c.word), state.idx)),
+  chapterNext: () => state.chapters.length && jump(nextStart(state.chapters.map((c) => c.word), state.idx)),
   wordPrev: () => jump(state.idx - 1),
   wordNext: () => jump(state.idx + 1),
 };
@@ -315,6 +370,17 @@ ui.wordPrev.addEventListener("click", nav.wordPrev);
 ui.wordNext.addEventListener("click", nav.wordNext);
 ui.next.addEventListener("click", nav.sentenceNext);
 ui.pageNext.addEventListener("click", nav.pageNext);
+ui.paraPrev.addEventListener("click", nav.paraPrev);
+ui.paraNext.addEventListener("click", nav.paraNext);
+ui.chapterPrev.addEventListener("click", nav.chapterPrev);
+ui.chapterNext.addEventListener("click", nav.chapterNext);
+ui.chapter.addEventListener("change", () => { goChapter(Number(ui.chapter.value)); ui.chapter.blur(); });
+ui.marks.addEventListener("click", (e) => {
+  if (e.target instanceof HTMLElement && e.target.dataset.i) goChapter(Number(e.target.dataset.i));
+});
+ui.contextText.addEventListener("click", (e) => {
+  if (e.target instanceof HTMLElement && e.target.dataset.i) jump(Number(e.target.dataset.i));
+});
 ui.progress.addEventListener("input", () => jump(Number(ui.progress.value)));
 ui.progress.addEventListener("change", () => ui.progress.blur()); // give keys back to the reader
 ui.wpmDown.addEventListener("click", () => changeWpm(-WPM_STEP));
@@ -331,12 +397,18 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === "Escape") e.target.blur();
     return; // typing a number must not drive the reader
   }
+  if (e.target instanceof HTMLSelectElement) {
+    if (e.key === "Escape") e.target.blur();
+    return; // arrows pick a chapter in the open list
+  }
   const actions = {
     " ": toggle,
     ArrowLeft: e.shiftKey ? nav.wordPrev : nav.sentencePrev,
     ArrowRight: e.shiftKey ? nav.wordNext : nav.sentenceNext,
-    PageUp: nav.pagePrev,
-    PageDown: nav.pageNext,
+    PageUp: e.shiftKey ? nav.chapterPrev : nav.pagePrev,
+    PageDown: e.shiftKey ? nav.chapterNext : nav.pageNext,
+    "[": nav.paraPrev,
+    "]": nav.paraNext,
     ArrowUp: () => changeWpm(WPM_STEP),
     ArrowDown: () => changeWpm(-WPM_STEP),
     "+": () => changeFont(FONT_STEP),
@@ -344,7 +416,9 @@ document.addEventListener("keydown", (e) => {
     "-": () => changeFont(-FONT_STEP),
     Escape: showLibrary,
   };
-  const action = actions[e.key];
+  // [ ] by physical key too: on a Cyrillic layout the same keys type "х" / "ї".
+  const byCode = { BracketLeft: nav.paraPrev, BracketRight: nav.paraNext };
+  const action = actions[e.key] ?? byCode[e.code];
   if (!action) return;
   e.preventDefault();
   action();

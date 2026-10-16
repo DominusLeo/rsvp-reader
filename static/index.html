@@ -32,7 +32,10 @@
       <div id="wpm-label" class="muted"></div>
     </div>
 
-    <div id="context" hidden></div>
+    <div id="context" hidden>
+      <div id="context-chapter" class="muted" hidden></div>
+      <p id="context-text" title="Клік по слову — перейти до нього"></p>
+    </div>
     <p id="reader-status" class="muted" hidden></p>
     <div id="ocr-panel" hidden>
       <button id="ocr-start">Розпізнати текст (OCR)</button>
@@ -41,15 +44,27 @@
     </div>
 
     <footer id="controls">
-      <input id="progress" type="range" min="0" value="0" step="1" aria-label="Позиція в книзі">
+      <div id="progress-wrap">
+        <div id="chapter-marks"></div>
+        <input id="progress" type="range" min="0" value="0" step="1" aria-label="Позиція в книзі">
+      </div>
+      <div id="chapter-group" class="row" hidden>
+        <div class="group chapter">
+          <button id="chapter-prev" title="Попередня глава (Shift+PageUp)">гл◀</button>
+          <select id="chapter" aria-label="Глава"></select>
+          <button id="chapter-next" title="Наступна глава (Shift+PageDown)">▶гл</button>
+        </div>
+      </div>
       <div class="row">
         <div class="group nav">
           <button id="page-prev" title="Попередня сторінка (PageUp)">⏪ стор</button>
+          <button id="para-prev" title="Попередній абзац ([)">¶◀</button>
           <button id="prev" title="Попереднє речення (←)">⏮ реч</button>
           <button id="word-prev" title="Попереднє слово (Shift+←)">◀ сл</button>
           <button id="play" class="play" title="Пуск / пауза (Пробіл)">▶</button>
           <button id="word-next" title="Наступне слово (Shift+→)">сл ▶</button>
           <button id="next" title="Наступне речення (→)">реч ⏭</button>
+          <button id="para-next" title="Наступний абзац (])">▶¶</button>
           <button id="page-next" title="Наступна сторінка (PageDown)">стор ⏩</button>
         </div>
         <div class="group">
@@ -67,7 +82,7 @@
           <span class="muted">px</span>
         </div>
       </div>
-      <p class="muted keys">Пробіл — пуск/пауза · ← → — речення · Shift+← → — слово · PageUp/PageDown — сторінка · ↑ ↓ — швидкість · + − — розмір · Esc — бібліотека</p>
+      <p class="muted keys">Пробіл — пуск/пауза · ← → — речення · Shift+← → — слово · [ ] — абзац · PageUp/PageDown — сторінка · Shift+PageUp/PageDown — глава · ↑ ↓ — швидкість · + − — розмір · Esc — бібліотека</p>
     </footer>
   </section>
 </body>

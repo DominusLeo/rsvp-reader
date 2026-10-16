@@ -62,31 +62,54 @@ export function nextSentenceStart(words, i) {
   return Math.min(j + 1, words.length - 1);
 }
 
-// pageStarts[k] = index of the first word of page k+1; empty pages repeat the next start.
+// `starts` = sorted word indices where a unit (page, paragraph, chapter) begins;
+// pageStarts[k] = first word of page k+1, empty pages repeat the next start.
 
-// Index into pageStarts of the last page starting at or before idx (binary search).
-function pageIndex(pageStarts, idx) {
-  let lo = 0, hi = pageStarts.length - 1;
+// Index of the last start at or before idx (binary search); 0 when idx precedes all.
+function startIndex(starts, idx, key = (s) => s) {
+  let lo = 0, hi = starts.length - 1;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (pageStarts[mid] <= idx) lo = mid; else hi = mid - 1;
+    if (key(starts[mid]) <= idx) lo = mid; else hi = mid - 1;
   }
   return lo;
 }
 
-export function pageOf(pageStarts, idx) {
-  return pageStarts.length ? pageIndex(pageStarts, idx) + 1 : 1;
+export function nextStart(starts, idx) {
+  // No next unit: stay where we are instead of jumping back to the last start.
+  return starts.find((start) => start > idx) ?? idx;
 }
 
-export function nextPageStart(pageStarts, idx) {
-  // No next page: stay where we are instead of jumping back to the last page start.
-  return pageStarts.find((start) => start > idx) ?? idx;
-}
-
-export function prevPageStart(pageStarts, idx) {
-  if (!pageStarts.length) return 0;
-  const current = pageStarts[pageIndex(pageStarts, idx)];
+// Mid-unit -> its start; already at the start -> the previous unit.
+export function prevStart(starts, idx) {
+  if (!starts.length) return 0;
+  const current = starts[startIndex(starts, idx)];
   if (idx > current) return current;
-  const earlier = pageStarts.filter((start) => start < current);
+  const earlier = starts.filter((start) => start < current);
   return earlier.length ? earlier[earlier.length - 1] : 0;
 }
+
+// chapters = [{word, ...}] sorted by word -> index of the current chapter, -1 before the first.
+export function chapterAt(chapters, idx) {
+  if (!chapters.length || chapters[0].word > idx) return -1;
+  return startIndex(chapters, idx, (c) => c.word);
+}
+
+// [from, to) of the paragraph holding idx; longer than maxWords -> a maxWords window
+// with a quarter of it before idx.
+export function paragraphWindow(paraStarts, idx, total, maxWords) {
+  const k = startIndex(paraStarts, idx);
+  const start = paraStarts.length && paraStarts[k] <= idx ? paraStarts[k] : 0;
+  const nextIdx = paraStarts.findIndex((s) => s > idx);
+  const end = nextIdx === -1 ? total : paraStarts[nextIdx];
+  if (end - start <= maxWords) return [start, end];
+  const to = Math.min(end, Math.max(start, idx - Math.floor(maxWords / 4)) + maxWords);
+  return [Math.max(start, to - maxWords), to];
+}
+
+export function pageOf(pageStarts, idx) {
+  return pageStarts.length ? startIndex(pageStarts, idx) + 1 : 1;
+}
+
+export const nextPageStart = nextStart;
+export const prevPageStart = prevStart;

@@ -3,8 +3,53 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   orpIndex, splitWord, wordDelayMs, sentenceStart, nextSentenceStart,
-  pageOf, nextPageStart, prevPageStart,
+  pageOf, nextPageStart, prevPageStart, nextStart, prevStart, chapterAt, paragraphWindow,
 } from "../static/rsvp-core.js";
+
+// paragraph starts at words 0, 4, 9; book has 15 words
+const PARAS = [0, 4, 9];
+
+test("nextStart jumps to the next start and stays put after the last one", () => {
+  assert.equal(nextStart(PARAS, 0), 4);
+  assert.equal(nextStart(PARAS, 5), 9);
+  assert.equal(nextStart(PARAS, 9), 9);
+  assert.equal(nextStart(PARAS, 12), 12);
+  assert.equal(nextStart([], 7), 7);
+});
+
+test("prevStart goes to the current start first, then to the previous one", () => {
+  assert.equal(prevStart(PARAS, 6), 4);
+  assert.equal(prevStart(PARAS, 4), 0);
+  assert.equal(prevStart(PARAS, 0), 0);
+  assert.equal(prevStart([], 7), 0);
+});
+
+test("prevStart before the first start goes to it", () => {
+  assert.equal(prevStart([3, 8], 1), 0);
+  assert.equal(prevStart([3, 8], 3), 0);
+});
+
+test("paragraphWindow returns the whole current paragraph", () => {
+  assert.deepEqual(paragraphWindow(PARAS, 5, 15, 120), [4, 9]);
+  assert.deepEqual(paragraphWindow(PARAS, 12, 15, 120), [9, 15]);
+  assert.deepEqual(paragraphWindow([3, 8], 1, 15, 120), [0, 3]); // before the first start
+});
+
+test("paragraphWindow trims a long paragraph around the word, a quarter before it", () => {
+  assert.deepEqual(paragraphWindow([0], 500, 1000, 120), [470, 590]);
+  assert.deepEqual(paragraphWindow([0], 10, 1000, 120), [0, 120]);
+  assert.deepEqual(paragraphWindow([0], 990, 1000, 120), [880, 1000]);
+});
+
+test("chapterAt returns the index of the last chapter starting at or before idx", () => {
+  const ch = [{ word: 5 }, { word: 20 }, { word: 20 }, { word: 40 }];
+  assert.equal(chapterAt(ch, 0), -1);
+  assert.equal(chapterAt(ch, 5), 0);
+  assert.equal(chapterAt(ch, 19), 0);
+  assert.equal(chapterAt(ch, 20), 2);
+  assert.equal(chapterAt(ch, 100), 3);
+  assert.equal(chapterAt([], 10), -1);
+});
 
 // pages start at word 0, 10, 10 (empty page), 25; book has 40 words
 const PAGES = [0, 10, 10, 25];
