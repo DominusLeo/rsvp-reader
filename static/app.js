@@ -17,7 +17,7 @@ const OCR_POLL_MS = 1000;
 
 const $ = (id) => document.getElementById(id);
 const ui = {
-  library: $("library"), reader: $("reader"), filter: $("filter"), rootFilter: $("root-filter"),
+  library: $("library"), reader: $("reader"), filter: $("filter"), pick: $("pick"),
   list: $("book-list"), libStatus: $("library-status"),
   title: $("book-title"), position: $("position"), back: $("back"),
   word: $("word"), wpmLabel: $("wpm-label"), context: $("context"),
@@ -51,56 +51,109 @@ function saveProgress() {
   storeJson(`rsvp:${state.book.id}`, { idx: state.idx, wpm: state.wpm, total: state.words.length });
 }
 
-// ---------- library ----------
+// ---------- library: recent books ----------
+async function loadBooks() {
+  state.loading = true;
+  try {
+    const res = await fetch("/api/books");
+    state.books = await res.json();
+    return true;
+  } catch (err) {
+    ui.libStatus.textContent = `Сервер недоступний: ${err.message}`;
+    return false;
+  } finally {
+    state.loading = false;
+  }
+}
+
 async function showLibrary() {
   stop();
   saveProgress();
   stopOcrPoll();
   state.book = null;
+  // Back in the library: drop #book=… without adding a history entry.
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
   ui.reader.hidden = true;
   ui.library.hidden = false;
-  state.loading = true;
-  ui.libStatus.textContent = "Завантаження… (сканую теки з книгами)";
-  try {
-    const res = await fetch("/api/books");
-    state.books = await res.json();
-    state.loading = false;
-    fillRootFilter();
-    renderLibrary();
-  } catch (err) {
-    state.loading = false;
-    ui.libStatus.textContent = `Сервер недоступний: ${err.message}`;
-  }
-}
-
-function fillRootFilter() {
-  const chosen = ui.rootFilter.value;
-  const roots = [...new Set(state.books.map((b) => b.root))].sort();
-  ui.rootFilter.replaceChildren(new Option("Усі теки", ""), ...roots.map((r) => new Option(r, r)));
-  ui.rootFilter.value = roots.includes(chosen) ? chosen : "";
+  ui.libStatus.textContent = "Завантаження…";
+  if (await loadBooks()) renderLibrary();
 }
 
 function renderLibrary() {
-  if (state.loading) return; // the list arrives with the scan
+  if (state.loading) return;
   const q = ui.filter.value.trim().toLowerCase();
-  const root = ui.rootFilter.value;
-  const books = state.books.filter((b) => (!root || b.root === root) && b.title.toLowerCase().includes(q));
+  const books = state.books.filter((b) => b.title.toLowerCase().includes(q));
   ui.libStatus.textContent = state.books.length
-    ? `Книг: ${books.length} з ${state.books.length}`
-    : "Книг не знайдено. Покладіть PDF / DjVu / EPUB у теку books або додайте теку в config.json.";
+    ? `Нещодавні: ${books.length} з ${state.books.length}`
+    : "Список порожній. «Відкрити книгу…» — вибрати файл; або «Відкрити за допомогою → RSVP читалка» у Провіднику.";
   ui.list.replaceChildren(...books.map((b) => {
     const li = document.createElement("li");
     const p = loadProgress(b.id);
     const pct = p && p.total ? `${Math.round((p.idx / p.total) * 100)}%` : "";
-    li.innerHTML = `<span class="fmt"></span><span class="t"></span><span class="muted"></span><span class="pct"></span>`;
+    li.innerHTML = `<span class="fmt"></span><span class="t"></span><span class="muted"></span>`
+      + `<span class="pct"></span><button class="remove" title="Прибрати зі списку (файл лишається)">×</button>`;
     li.children[0].textContent = b.format;
     li.children[1].textContent = b.title;
-    li.children[2].textContent = `${b.size_mb} МБ`;
+    li.children[2].textContent = `${b.size_mb} МБ · ${(b.opened_at || "").slice(0, 10)}`;
     li.children[3].textContent = pct;
-    li.title = `Тека: ${b.root} / ${b.folder}`;
-    li.addEventListener("click", () => openBook(b));
+    li.children[4].addEventListener("click", (e) => { e.stopPropagation(); removeRecent(b); });
+    if (b.available) {
+      li.title = `Тека: ${b.folder}`;
+      li.addEventListener("click", () => { location.hash = `book=${b.id}`; });
+    } else {
+      li.classList.add("missing");
+      li.title = `Файл недоступний (переміщено або видалено). Тека: ${b.folder}`;
+    }
     return li;
   }));
+}
+
+async function removeRecent(book) {
+  try {
+    const res = await fetch("/api/recent/remove", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: book.id }),
+    });
+    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+  } catch (err) {
+    ui.libStatus.textContent = `Не вдалося прибрати: ${err.message}`;
+    return;
+  }
+  if (await loadBooks()) renderLibrary();
+}
+
+async function pickBook() {
+  ui.pick.disabled = true;
+  ui.libStatus.textContent = "Виберіть файл у діалозі (він може відкритися за вікном браузера)…";
+  try {
+    const res = await fetch("/api/pick", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    if (data.cancelled) { renderLibrary(); return; }
+    location.hash = `book=${data.id}`; // hashchange opens it
+  } catch (err) {
+    ui.libStatus.textContent = `Не вдалося відкрити: ${err.message}`;
+  } finally {
+    ui.pick.disabled = false;
+  }
+}
+
+// #book=<id> opens the book: library clicks, the file dialog and the Explorer launcher all land here.
+async function route() {
+  const id = new URLSearchParams(location.hash.slice(1)).get("book");
+  if (!id) {
+    if (!ui.reader.hidden) showLibrary(); // browser Back from a book
+    else renderLibrary();
+    return;
+  }
+  if (state.book?.id === id) return;
+  let book = state.books.find((b) => b.id === id);
+  if (!book && await loadBooks()) book = state.books.find((b) => b.id === id);
+  if (!book) {
+    await showLibrary();
+    ui.libStatus.textContent = "Цієї книги немає у списку нещодавніх — відкрийте її ще раз.";
+    return;
+  }
+  openBook(book);
 }
 
 // ---------- reader ----------
@@ -361,7 +414,7 @@ async function pollOcr(book, started) {
 
 // ---------- wiring ----------
 ui.filter.addEventListener("input", renderLibrary);
-ui.rootFilter.addEventListener("change", renderLibrary);
+ui.pick.addEventListener("click", pickBook);
 ui.back.addEventListener("click", showLibrary);
 ui.play.addEventListener("click", toggle);
 ui.pagePrev.addEventListener("click", nav.pagePrev);
@@ -424,7 +477,8 @@ document.addEventListener("keydown", (e) => {
   action();
 });
 window.addEventListener("beforeunload", saveProgress);
+window.addEventListener("hashchange", route);
 
 setWpm(DEFAULT_WPM);
 setFont(loadJson("rsvp:font"), false);
-showLibrary();
+loadBooks().then((ok) => { if (ok) route(); }); // on failure the status line keeps the error

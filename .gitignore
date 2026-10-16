@@ -4,5 +4,9 @@ tessdata/
 bash.exe.stackdump
 books/*
 !books/.gitkeep
+recent.json
+recent.tmp
+explorer_install.json
+logs/
 __pycache__/
 *.pyc

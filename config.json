@@ -1,8 +1,3 @@
 {
-  "port": 8765,
-  "book_dirs": [
-    "C:/Users/Art Leo/Desktop",
-    "books",
-    "C:/Users/Art Leo/Downloads/Telegram Desktop"
-  ]
+  "port": 8765
 }
