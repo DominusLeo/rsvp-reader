@@ -6,7 +6,8 @@ books/*
 !books/.gitkeep
 recent.json
 recent.tmp
-explorer_install.json
+explorer_install*.json
+explorer_install.tmp
 logs/
 __pycache__/
 *.pyc
