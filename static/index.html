@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RSVP читалка</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <section id="library">
+    <header class="bar">
+      <h1>Бібліотека</h1>
+      <input id="filter" type="search" placeholder="Пошук книги…" autocomplete="off">
+    </header>
+    <p id="library-status" class="muted">Завантаження…</p>
+    <ul id="book-list"></ul>
+  </section>
+
+  <section id="reader" hidden>
+    <header class="bar">
+      <button id="back" title="До бібліотеки (Esc)">←</button>
+      <h1 id="book-title"></h1>
+      <span id="position" class="muted"></span>
+    </header>
+
+    <div id="stage">
+      <div class="guide top"><span class="notch"></span></div>
+      <div id="word" aria-live="off"><span class="l"></span><span class="p"></span><span class="r"></span></div>
+      <div class="guide bottom"><span class="notch"></span></div>
+      <div id="wpm-label" class="muted"></div>
+    </div>
+
+    <div id="context" hidden></div>
+    <p id="reader-status" class="muted" hidden></p>
+
+    <footer id="controls">
+      <input id="progress" type="range" min="0" value="0" step="1" aria-label="Позиція в книзі">
+      <div class="row">
+        <button id="prev" title="Попереднє речення (←)">⏮</button>
+        <button id="play" title="Пуск / пауза (Пробіл)">▶</button>
+        <button id="next" title="Наступне речення (→)">⏭</button>
+        <label class="wpm">
+          <input id="wpm" type="range" min="100" max="1000" step="25" value="300">
+          <span id="wpm-value"></span> слів/хв
+        </label>
+      </div>
+      <p class="muted keys">Пробіл — пуск/пауза · ← → — речення · ↑ ↓ — швидкість · Esc — бібліотека</p>
+    </footer>
+  </section>
+</body>
+</html>

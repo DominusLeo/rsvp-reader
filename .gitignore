@@ -1,0 +1,6 @@
+venv/
+cache/
+books/*
+!books/.gitkeep
+__pycache__/
+*.pyc
