@@ -1,7 +1,33 @@
 // Run: node --test tests/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { orpIndex, splitWord, wordDelayMs, sentenceStart, nextSentenceStart } from "../static/rsvp-core.js";
+import {
+  orpIndex, splitWord, wordDelayMs, sentenceStart, nextSentenceStart,
+  pageOf, nextPageStart, prevPageStart,
+} from "../static/rsvp-core.js";
+
+// pages start at word 0, 10, 10 (empty page), 25; book has 40 words
+const PAGES = [0, 10, 10, 25];
+
+test("pageOf returns the 1-based page holding the word", () => {
+  assert.equal(pageOf(PAGES, 0), 1);
+  assert.equal(pageOf(PAGES, 9), 1);
+  assert.equal(pageOf(PAGES, 10), 3); // empty page 2 is skipped
+  assert.equal(pageOf(PAGES, 39), 4);
+});
+
+test("nextPageStart skips empty pages and stops at the last page", () => {
+  assert.equal(nextPageStart(PAGES, 3), 10);
+  assert.equal(nextPageStart(PAGES, 10), 25);
+  assert.equal(nextPageStart(PAGES, 30), 25); // already on the last page
+});
+
+test("prevPageStart goes to the current page start, then to the previous page", () => {
+  assert.equal(prevPageStart(PAGES, 30), 25);
+  assert.equal(prevPageStart(PAGES, 25), 10);
+  assert.equal(prevPageStart(PAGES, 10), 0);
+  assert.equal(prevPageStart(PAGES, 0), 0);
+});
 
 // Expected red letters are taken from frames of the reference video.
 const VIDEO_FRAMES = [

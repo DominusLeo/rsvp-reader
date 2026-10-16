@@ -1,5 +1,7 @@
 venv/
 cache/
+tessdata/
+bash.exe.stackdump
 books/*
 !books/.gitkeep
 __pycache__/
