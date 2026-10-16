@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import threading
+import time
 import webbrowser
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +33,8 @@ HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 # Bump when extraction/cleanup changes so stale caches are rebuilt.
 EXTRACT_VERSION = 1
+SAVE_RETRIES = 5
+SAVE_RETRY_S = 0.1
 
 log = logging.getLogger("rsvp")
 
@@ -80,7 +83,15 @@ def _save_book(path: Path, book: dict) -> None:
     CACHE_DIR.mkdir(exist_ok=True)
     tmp = cache.with_suffix(".tmp")
     tmp.write_text(json.dumps(book, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(cache)
+    # Windows refuses to replace a file another thread is reading right now.
+    for attempt in range(SAVE_RETRIES):
+        try:
+            tmp.replace(cache)
+            return
+        except PermissionError:
+            if attempt == SAVE_RETRIES - 1:
+                raise
+            time.sleep(SAVE_RETRY_S)
 
 
 def load_book(path: Path) -> dict:
@@ -99,17 +110,22 @@ def load_book(path: Path) -> dict:
 def _run_ocr(book_id: str, path: Path) -> None:
     job = _ocr_jobs[book_id]
 
+    failures: list[int] = []
+
     def progress(done: int, total: int) -> None:
         with _ocr_lock:
             job.update(done=done, total=total)
 
     try:
-        pages = ocr_book(path, OCR_CACHE_DIR / _source_key(path), TESSDATA_DIR, on_progress=progress)
+        pages = ocr_book(
+            path, OCR_CACHE_DIR / _source_key(path), TESSDATA_DIR, on_progress=progress, failures=failures,
+        )
         book = build_book(pages)
         book["title"] = path.stem.replace("_", " ")
         book["ocr"] = True
+        book["ocr_failed_pages"] = len(failures)
         _save_book(path, book)
-        state = {"state": "done"}
+        state = {"state": "done", "failed": len(failures)}
     except Exception as exc:  # surfaced to the UI, full trace in the console
         log.exception("OCR failed: %s", path)
         state = {"state": "error", "error": f"{type(exc).__name__}: {exc}"}
@@ -139,7 +155,20 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
+    def _allowed_hosts(self) -> set[str]:
+        port = self.server.server_address[1]
+        return {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+    def _host_ok(self) -> bool:
+        # DNS rebinding: a foreign name resolving to 127.0.0.1 arrives with its own Host.
+        if self.headers.get("Host") in self._allowed_hosts():
+            return True
+        self._send_json({"error": "forbidden host"}, HTTPStatus.FORBIDDEN)
+        return False
+
     def do_GET(self):
+        if not self._host_ok():
+            return
         route = self.path.split("?", 1)[0]
         if route == "/api/books":
             return self._list_books()
@@ -150,9 +179,11 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        if not self._host_ok():
+            return
         # A page from another site must not start heavy jobs on this machine.
         origin = self.headers.get("Origin")
-        if origin and origin != f"http://{self.headers.get('Host')}":
+        if origin and origin not in {f"http://{host}" for host in self._allowed_hosts()}:
             return self._send_json({"error": "forbidden origin"}, HTTPStatus.FORBIDDEN)
         route = self.path.split("?", 1)[0]
         if not route.startswith("/api/ocr/"):

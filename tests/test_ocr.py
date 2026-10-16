@@ -50,6 +50,22 @@ class OcrPagesTest(unittest.TestCase):
         pages = ocr_pages(3, self.render, flaky, self.cache, workers=1)
         self.assertEqual(pages, ["ok", "", "ok"])
 
+    def test_failed_pages_are_reported_and_not_cached(self):
+        def flaky(image):
+            if image == b"img1":
+                raise RuntimeError("tesseract crashed")
+            return "ok"
+        failed = []
+        ocr_pages(3, self.render, flaky, self.cache, workers=2, failures=failed)
+        self.assertEqual(failed, [1])
+        self.assertFalse((self.cache / "0001.txt").exists())
+
+    def test_all_pages_failing_raises(self):
+        def broken(image):
+            raise RuntimeError("tesseract missing DLL")
+        with self.assertRaisesRegex(RuntimeError, "all 3 pages failed"):
+            ocr_pages(3, self.render, broken, self.cache, workers=2)
+
 
 if __name__ == "__main__":
     unittest.main()

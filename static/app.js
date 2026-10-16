@@ -117,7 +117,8 @@ async function openBook(book) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
     if (state.book !== book) return; // user went back meanwhile
-    if (data.no_text || data.words.length === 0) {
+    // After OCR a sparse book (comics, figures) is still readable; only a raw scan needs OCR.
+    if (data.words.length === 0 || (data.no_text && !data.ocr)) {
       showScanNotice(book, data);
       return;
     }
@@ -129,7 +130,8 @@ async function openBook(book) {
     state.idx = Math.min(saved?.idx ?? 0, state.words.length - 1);
     setWpm(saved?.wpm ?? state.wpm);
     ui.progress.max = String(state.words.length - 1);
-    setStatus(data.ocr ? "Текст розпізнано OCR — можливі помилки розпізнавання." : "");
+    const failed = data.ocr_failed_pages ? ` Не розпізнано сторінок: ${data.ocr_failed_pages} — повторний OCR спробує їх ще раз.` : "";
+    setStatus(data.ocr ? `Текст розпізнано OCR — можливі помилки розпізнавання.${failed}` : "");
     render();
     showContext();
   } catch (err) {
@@ -243,12 +245,14 @@ function showScanNotice(book, data) {
     setStatus("У цій книзі немає текстового шару, а OCR для цього формату не підтримано.");
     return;
   }
-  setStatus("Це скан без текстового шару. OCR розпізнає текст (≈0.6 с на сторінку, результат кешується).");
+  setStatus(data.ocr
+    ? "OCR уже виконано, але тексту не знайдено. Можна спробувати ще раз."
+    : "Це скан без текстового шару. OCR розпізнає текст (≈0.6 с на сторінку, результат кешується).");
   ui.ocrPanel.hidden = false;
   ui.ocrStart.disabled = false;
   ui.ocrProgress.hidden = true;
   ui.ocrText.textContent = "";
-  pollOcr(book); // a run may already be going, e.g. after a page reload
+  pollOcr(book, false); // a run may already be going, e.g. after a page reload
 }
 
 async function startOcr() {
@@ -259,7 +263,7 @@ async function startOcr() {
     const res = await fetch(`/api/ocr/${book.id}`, { method: "POST" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
-    pollOcr(book);
+    pollOcr(book, true);
   } catch (err) {
     ui.ocrText.textContent = `Помилка: ${err.message}`;
     ui.ocrStart.disabled = false;
@@ -271,14 +275,17 @@ function stopOcrPoll() {
   state.ocrPoll = null;
 }
 
-async function pollOcr(book) {
+// `started`: this chain saw the run going, so "done" means fresh text to load.
+// Without it a stale "done" would reopen the book in a loop.
+async function pollOcr(book, started) {
   stopOcrPoll();
   if (state.book !== book) return;
   let job;
   try {
     job = await (await fetch(`/api/ocr/${book.id}`)).json();
   } catch (err) {
-    ui.ocrText.textContent = `Сервер недоступний: ${err.message}`;
+    ui.ocrText.textContent = `Сервер недоступний: ${err.message} — пробую ще раз…`;
+    state.ocrPoll = setTimeout(() => pollOcr(book, started), OCR_POLL_MS * 3);
     return;
   }
   if (state.book !== book) return;
@@ -288,8 +295,8 @@ async function pollOcr(book) {
     ui.ocrProgress.max = Math.max(job.total, 1);
     ui.ocrProgress.value = job.done;
     ui.ocrText.textContent = job.total ? `${job.done} / ${job.total} стор.` : "Готую сторінки…";
-    state.ocrPoll = setTimeout(() => pollOcr(book), OCR_POLL_MS);
-  } else if (job.state === "done") {
+    state.ocrPoll = setTimeout(() => pollOcr(book, true), OCR_POLL_MS);
+  } else if (job.state === "done" && started) {
     openBook(book);
   } else if (job.state === "error") {
     ui.ocrText.textContent = `Помилка OCR: ${job.error}`;
@@ -319,7 +326,7 @@ ui.font.addEventListener("change", () => setFont(Number(ui.font.value)));
 ui.ocrStart.addEventListener("click", startOcr);
 
 document.addEventListener("keydown", (e) => {
-  if (ui.reader.hidden) return;
+  if (ui.reader.hidden || e.ctrlKey || e.metaKey || e.altKey) return; // keep browser zoom / back
   if (e.target instanceof HTMLInputElement && e.target.type !== "range") {
     if (e.key === "Enter" || e.key === "Escape") e.target.blur();
     return; // typing a number must not drive the reader

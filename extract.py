@@ -8,9 +8,13 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 import pymupdf
+
+# PyMuPDF is not thread-safe even across separate documents: every call takes this lock.
+PYMUPDF_LOCK = threading.Lock()
 
 PYMUPDF_SUFFIXES = {".pdf", ".epub", ".fb2", ".mobi", ".xps", ".cbz"}
 DJVU_SUFFIXES = {".djvu", ".djv"}
@@ -60,7 +64,7 @@ def extract_pages(path: Path) -> list[str]:
     if suffix in DJVU_SUFFIXES:
         return _djvu_pages(path)
     if suffix in PYMUPDF_SUFFIXES:
-        with pymupdf.open(path) as doc:
+        with PYMUPDF_LOCK, pymupdf.open(path) as doc:
             return [page.get_text() for page in doc]
     raise ValueError(f"unsupported format: {suffix}")
 

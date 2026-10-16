@@ -9,14 +9,13 @@ import logging
 import os
 import shutil
 import subprocess
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
 import pymupdf
 
-from extract import DJVU_SUFFIXES, PYMUPDF_SUFFIXES
+from extract import DJVU_SUFFIXES, PYMUPDF_LOCK, PYMUPDF_SUFFIXES
 
 OCR_SUFFIXES = DJVU_SUFFIXES | PYMUPDF_SUFFIXES
 OCR_DPI = 300
@@ -26,9 +25,6 @@ PAGE_TIMEOUT_S = 180
 MAX_WORKERS = 16
 
 log = logging.getLogger("rsvp.ocr")
-
-# PyMuPDF is not thread-safe even across separate documents.
-_pymupdf_lock = threading.Lock()
 
 
 def default_workers() -> int:
@@ -42,8 +38,13 @@ def ocr_pages(
     cache_dir: Path,
     workers: int = 1,
     on_progress: Callable[[int, int], None] | None = None,
+    failures: list[int] | None = None,
 ) -> list[str]:
-    """OCR pages 0..total-1 in parallel; `cache_dir/NNNN.txt` holds page NNNN (0-based)."""
+    """OCR pages 0..total-1 in parallel; `cache_dir/NNNN.txt` holds page NNNN (0-based).
+
+    A failed page becomes "" and its index goes to `failures`; if every page
+    to do failed, the tool itself is broken and RuntimeError is raised.
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
     pages: list[str] = [""] * total
     todo: list[int] = []
@@ -58,24 +59,33 @@ def ocr_pages(
     if on_progress:
         on_progress(done, total)
 
-    def job(i: int) -> str:
+    def job(i: int) -> str | None:
         try:
             text = recognize(render(i))
         except Exception:  # one bad page must not lose the whole book
             log.exception("OCR failed on page %d", i + 1)
-            return ""
+            return None
         tmp = cache_dir / f"{i:04d}.tmp"
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(cache_dir / f"{i:04d}.txt")
         return text
 
+    failed: list[int] = []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {pool.submit(job, i): i for i in todo}
         for future in as_completed(futures):
-            pages[futures[future]] = future.result()
+            i, text = futures[future], future.result()
+            if text is None:
+                failed.append(i)
+            pages[i] = text or ""
             done += 1
             if on_progress:
                 on_progress(done, total)
+    failed.sort()
+    if failures is not None:
+        failures.extend(failed)
+    if todo and len(failed) == len(todo):
+        raise RuntimeError(f"OCR: all {len(todo)} pages failed, see the server console")
     return pages
 
 
@@ -119,7 +129,7 @@ def page_count(path: Path) -> int:
             [_djvu_tool("djvused"), "-e", "n", str(path)], capture_output=True, timeout=60, check=True,
         )
         return int(result.stdout.strip())
-    with _pymupdf_lock, pymupdf.open(path) as doc:
+    with PYMUPDF_LOCK, pymupdf.open(path) as doc:
         return doc.page_count
 
 
@@ -137,7 +147,7 @@ def page_renderer(path: Path) -> Callable[[int], bytes]:
         return render_djvu
 
     def render_pymupdf(i: int) -> bytes:
-        with _pymupdf_lock, pymupdf.open(path) as doc:
+        with PYMUPDF_LOCK, pymupdf.open(path) as doc:
             pix = doc[i].get_pixmap(dpi=OCR_DPI, colorspace=pymupdf.csGRAY)
             return pix.tobytes("png")
 
@@ -150,11 +160,12 @@ def ocr_book(
     tessdata_dir: Path,
     workers: int | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    failures: list[int] | None = None,
 ) -> list[str]:
     if path.suffix.lower() not in OCR_SUFFIXES:
         raise ValueError(f"OCR is not supported for {path.suffix}")
     recognize = tesseract_recognizer(tessdata_dir)
     return ocr_pages(
         page_count(path), page_renderer(path), recognize, cache_dir,
-        workers=workers or default_workers(), on_progress=on_progress,
+        workers=workers or default_workers(), on_progress=on_progress, failures=failures,
     )
