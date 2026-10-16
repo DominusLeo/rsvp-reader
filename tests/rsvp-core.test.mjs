@@ -16,10 +16,10 @@ test("pageOf returns the 1-based page holding the word", () => {
   assert.equal(pageOf(PAGES, 39), 4);
 });
 
-test("nextPageStart skips empty pages and stops at the last page", () => {
+test("nextPageStart skips empty pages and stays put on the last page", () => {
   assert.equal(nextPageStart(PAGES, 3), 10);
   assert.equal(nextPageStart(PAGES, 10), 25);
-  assert.equal(nextPageStart(PAGES, 30), 25); // already on the last page
+  assert.equal(nextPageStart(PAGES, 30), 30); // already on the last page: position kept
 });
 
 test("prevPageStart goes to the current page start, then to the previous page", () => {

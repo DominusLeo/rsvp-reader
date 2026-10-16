@@ -79,8 +79,8 @@ export function pageOf(pageStarts, idx) {
 }
 
 export function nextPageStart(pageStarts, idx) {
-  const next = pageStarts.find((start) => start > idx);
-  return next ?? pageStarts[pageStarts.length - 1] ?? 0;
+  // No next page: stay where we are instead of jumping back to the last page start.
+  return pageStarts.find((start) => start > idx) ?? idx;
 }
 
 export function prevPageStart(pageStarts, idx) {
