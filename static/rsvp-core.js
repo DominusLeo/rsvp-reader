@@ -61,3 +61,32 @@ export function nextSentenceStart(words, i) {
   while (j < words.length - 1 && !isSentenceEnd(words[j])) j++;
   return Math.min(j + 1, words.length - 1);
 }
+
+// pageStarts[k] = index of the first word of page k+1; empty pages repeat the next start.
+
+// Index into pageStarts of the last page starting at or before idx (binary search).
+function pageIndex(pageStarts, idx) {
+  let lo = 0, hi = pageStarts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (pageStarts[mid] <= idx) lo = mid; else hi = mid - 1;
+  }
+  return lo;
+}
+
+export function pageOf(pageStarts, idx) {
+  return pageStarts.length ? pageIndex(pageStarts, idx) + 1 : 1;
+}
+
+export function nextPageStart(pageStarts, idx) {
+  const next = pageStarts.find((start) => start > idx);
+  return next ?? pageStarts[pageStarts.length - 1] ?? 0;
+}
+
+export function prevPageStart(pageStarts, idx) {
+  if (!pageStarts.length) return 0;
+  const current = pageStarts[pageIndex(pageStarts, idx)];
+  if (idx > current) return current;
+  const earlier = pageStarts.filter((start) => start < current);
+  return earlier.length ? earlier[earlier.length - 1] : 0;
+}

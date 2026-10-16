@@ -11,6 +11,7 @@
   <section id="library">
     <header class="bar">
       <h1>Бібліотека</h1>
+      <select id="root-filter" aria-label="Тека"><option value="">Усі теки</option></select>
       <input id="filter" type="search" placeholder="Пошук книги…" autocomplete="off">
     </header>
     <p id="library-status" class="muted">Завантаження…</p>
@@ -33,19 +34,40 @@
 
     <div id="context" hidden></div>
     <p id="reader-status" class="muted" hidden></p>
+    <div id="ocr-panel" hidden>
+      <button id="ocr-start">Розпізнати текст (OCR)</button>
+      <progress id="ocr-progress" max="1" value="0" hidden></progress>
+      <span id="ocr-text" class="muted"></span>
+    </div>
 
     <footer id="controls">
       <input id="progress" type="range" min="0" value="0" step="1" aria-label="Позиція в книзі">
       <div class="row">
-        <button id="prev" title="Попереднє речення (←)">⏮</button>
-        <button id="play" title="Пуск / пауза (Пробіл)">▶</button>
-        <button id="next" title="Наступне речення (→)">⏭</button>
-        <label class="wpm">
-          <input id="wpm" type="range" min="100" max="1000" step="25" value="300">
-          <span id="wpm-value"></span> слів/хв
-        </label>
+        <div class="group nav">
+          <button id="page-prev" title="Попередня сторінка (PageUp)">⏪ стор</button>
+          <button id="prev" title="Попереднє речення (←)">⏮ реч</button>
+          <button id="word-prev" title="Попереднє слово (Shift+←)">◀ сл</button>
+          <button id="play" class="play" title="Пуск / пауза (Пробіл)">▶</button>
+          <button id="word-next" title="Наступне слово (Shift+→)">сл ▶</button>
+          <button id="next" title="Наступне речення (→)">реч ⏭</button>
+          <button id="page-next" title="Наступна сторінка (PageDown)">стор ⏩</button>
+        </div>
+        <div class="group">
+          <span class="muted">Швидкість</span>
+          <button id="wpm-down" title="Повільніше (↓)">−</button>
+          <input id="wpm" type="number" min="100" max="1000" step="25" value="300" aria-label="Слів за хвилину">
+          <button id="wpm-up" title="Швидше (↑)">+</button>
+          <span class="muted">сл/хв</span>
+        </div>
+        <div class="group">
+          <span class="muted">Розмір</span>
+          <button id="font-down" title="Менший шрифт (−)">A−</button>
+          <input id="font" type="number" min="24" max="120" step="4" aria-label="Розмір слова, px">
+          <button id="font-up" title="Більший шрифт (+)">A+</button>
+          <span class="muted">px</span>
+        </div>
       </div>
-      <p class="muted keys">Пробіл — пуск/пауза · ← → — речення · ↑ ↓ — швидкість · Esc — бібліотека</p>
+      <p class="muted keys">Пробіл — пуск/пауза · ← → — речення · Shift+← → — слово · PageUp/PageDown — сторінка · ↑ ↓ — швидкість · + − — розмір · Esc — бібліотека</p>
     </footer>
   </section>
 </body>

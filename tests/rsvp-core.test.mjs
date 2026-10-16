@@ -1,4 +1,4 @@
-// Run: node --test tests/
+// Run: node --test tests/rsvp-core.test.mjs (Node 22 does not accept a directory)
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
