@@ -27,6 +27,12 @@ MAX_WORKERS = 16
 log = logging.getLogger("rsvp.ocr")
 
 
+def _read_page(path: Path) -> str:
+    # Older cache files hold "\r\r\n" per line (Tesseract's \r\n written in text mode);
+    # dropping every \r keeps one line break per line, so blank lines still mark paragraphs.
+    return path.read_bytes().decode("utf-8", errors="replace").replace("\r", "")
+
+
 def default_workers() -> int:
     return max(1, min(MAX_WORKERS, (os.cpu_count() or 2) // 2))
 
@@ -51,7 +57,7 @@ def ocr_pages(
     for i in range(total):
         cached = cache_dir / f"{i:04d}.txt"
         if cached.exists():
-            pages[i] = cached.read_text(encoding="utf-8")
+            pages[i] = _read_page(cached)
         else:
             todo.append(i)
 
@@ -89,6 +95,19 @@ def ocr_pages(
     return pages
 
 
+def cached_pages(cache_dir: Path, total: int) -> list[str] | None:
+    """All `total` pages from the OCR cache, or None if any page is missing."""
+    if total <= 0:
+        return None
+    pages: list[str] = []
+    for i in range(total):
+        cached = cache_dir / f"{i:04d}.txt"
+        if not cached.is_file():
+            return None
+        pages.append(_read_page(cached))
+    return pages
+
+
 # ---------- concrete render / recognize ----------
 
 def find_tesseract() -> str:
@@ -111,7 +130,7 @@ def tesseract_recognizer(tessdata_dir: Path, langs: str = OCR_LANGS) -> Callable
 
     def recognize(image: bytes) -> str:
         result = subprocess.run(cmd, input=image, capture_output=True, env=env, timeout=PAGE_TIMEOUT_S, check=True)
-        return result.stdout.decode("utf-8", errors="replace")
+        return result.stdout.decode("utf-8", errors="replace").replace("\r", "")
 
     return recognize
 

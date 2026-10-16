@@ -20,8 +20,8 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from extract import SUPPORTED_SUFFIXES, build_book, extract_pages
-from ocr import OCR_SUFFIXES, ocr_book
+from extract import SUPPORTED_SUFFIXES, build_book, extract, extract_toc
+from ocr import OCR_SUFFIXES, cached_pages, ocr_book, page_count
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
@@ -32,7 +32,7 @@ CONFIG_PATH = ROOT / "config.json"
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 # Bump when extraction/cleanup changes so stale caches are rebuilt.
-EXTRACT_VERSION = 1
+EXTRACT_VERSION = 2
 SAVE_RETRIES = 5
 SAVE_RETRY_S = 0.1
 
@@ -94,6 +94,34 @@ def _save_book(path: Path, book: dict) -> None:
             time.sleep(SAVE_RETRY_S)
 
 
+def _ocr_book_from_pages(path: Path, pages: list[str], toc: list, failed: int = 0) -> dict:
+    book = build_book(pages, toc)
+    book["title"] = path.stem.replace("_", " ")
+    book["ocr"] = True
+    book["ocr_failed_pages"] = failed
+    return book
+
+
+def _toc_or_empty(path: Path) -> list:
+    try:
+        return extract_toc(path)
+    except Exception:  # a broken outline must not cost the text
+        log.exception("TOC read failed: %s", path)
+        return []
+
+
+def _book_from_ocr_cache(path: Path, toc: list) -> dict | None:
+    """A finished OCR survives an EXTRACT_VERSION bump: rebuild from page files, no Tesseract."""
+    if path.suffix.lower() not in OCR_SUFFIXES:
+        return None
+    try:
+        pages = cached_pages(OCR_CACHE_DIR / _source_key(path), page_count(path))
+    except Exception:
+        log.exception("OCR cache check failed: %s", path)
+        return None
+    return _ocr_book_from_pages(path, pages, toc) if pages is not None else None
+
+
 def load_book(path: Path) -> dict:
     cache = _cache_path(path)
     if cache.exists():
@@ -101,8 +129,11 @@ def load_book(path: Path) -> dict:
     with _extract_lock:  # one heavy extraction at a time
         if cache.exists():
             return json.loads(cache.read_text(encoding="utf-8"))
-        book = build_book(extract_pages(path))
+        pages, toc = extract(path)
+        book = build_book(pages, toc)
         book["title"] = path.stem.replace("_", " ")
+        if book["no_text"]:
+            book = _book_from_ocr_cache(path, toc) or book
         _save_book(path, book)
         return book
 
@@ -120,11 +151,7 @@ def _run_ocr(book_id: str, path: Path) -> None:
         pages = ocr_book(
             path, OCR_CACHE_DIR / _source_key(path), TESSDATA_DIR, on_progress=progress, failures=failures,
         )
-        book = build_book(pages)
-        book["title"] = path.stem.replace("_", " ")
-        book["ocr"] = True
-        book["ocr_failed_pages"] = len(failures)
-        _save_book(path, book)
+        _save_book(path, _ocr_book_from_pages(path, pages, _toc_or_empty(path), len(failures)))
         state = {"state": "done", "failed": len(failures)}
     except Exception as exc:  # surfaced to the UI, full trace in the console
         log.exception("OCR failed: %s", path)
