@@ -417,6 +417,7 @@ ui.filter.addEventListener("input", renderLibrary);
 ui.pick.addEventListener("click", pickBook);
 ui.back.addEventListener("click", showLibrary);
 ui.play.addEventListener("click", toggle);
+$("stage").addEventListener("click", toggle);
 ui.pagePrev.addEventListener("click", nav.pagePrev);
 ui.prev.addEventListener("click", nav.sentencePrev);
 ui.wordPrev.addEventListener("click", nav.wordPrev);

@@ -93,6 +93,8 @@ button:disabled { opacity: 0.5; cursor: progress; }
   justify-content: center;
   gap: 0;
   min-height: 220px;
+  cursor: pointer;
+  user-select: none; /* a click toggles play; double-click must not select the word */
 }
 .guide { position: relative; height: 1px; background: var(--line); }
 .guide .notch {
