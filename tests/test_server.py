@@ -1,7 +1,9 @@
 """HTTP routes through a real server on a free port; recent list, caches and dialog are temp/fake."""
 import http.client
 import json
+import logging
 import os
+import socket
 import tempfile
 import threading
 import unittest
@@ -77,15 +79,23 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(books[0]["available"])
         self.assertNotIn("path", books[0])  # the full path never leaves the server
 
+    def test_relative_path_to_existing_file_is_rejected(self):
+        existing = self.book()
+        cwd = os.getcwd()
+        os.chdir(self.dir)  # the file exists relative to the server's cwd, on any drive
+        try:
+            status, _ = self.request("POST", "/api/open", {"path": existing.name})
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(status, 400)
+        self.assertEqual(self.listed_ids(), [])
+
     def test_open_rejects_bad_paths(self):
         folder = self.dir / "folder.pdf"
         folder.mkdir()
         text = self.dir / "notes.txt"
         text.write_text("x", encoding="utf-8")
-        existing = self.book()
         cases = {
-            # relative to the server's cwd the file exists: only the absolute-path rule rejects it
-            "relative": {"path": os.path.relpath(existing, os.getcwd())},
             "missing": {"path": str(self.dir / "nope.pdf")},
             "directory": {"path": str(folder)},
             "suffix": {"path": str(text)},
@@ -127,6 +137,14 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(self.listed_ids(), [])
         self.assertTrue(path.is_file())
+
+    def test_removed_book_is_no_longer_served(self):
+        path = self.book()
+        _, data = self.request("POST", "/api/open", {"path": str(path)})
+        self.request("POST", "/api/recent/remove", {"id": data["id"]})
+        status, _ = self.request("GET", f"/api/book/{data['id']}")
+        self.assertEqual(status, 404)
+        self.assertEqual(self.listed_ids(), [])  # and reading it did not put it back
 
     def test_remove_unknown_id_is_404(self):
         status, _ = self.request("POST", "/api/recent/remove", {"id": "0123456789abcdef"})
@@ -213,6 +231,49 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(book["no_text"])
         self.assertNotIn("ocr", book)
+
+
+class BusyPortTest(unittest.TestCase):
+    """pythonw has no console: a port already taken must end in the log file and exit code 1."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.log = Path(self._tmp.name) / "server.log"
+        patch = mock.patch.object(server, "recent", RecentBooks(Path(self._tmp.name) / "recent.json"))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def tearDown(self):
+        root = logging.getLogger()
+        for handler in root.handlers[:]:  # main() configured the root logger with our temp file
+            handler.close()
+            root.removeHandler(handler)
+        self._tmp.cleanup()
+
+    def run_on_busy_port(self, reuse):
+        occupant = socket.socket()
+        if reuse:  # what the old server (socketserver default) sets on its socket
+            occupant.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        occupant.bind(("127.0.0.1", 0))
+        occupant.listen()
+        port = occupant.getsockname()[1]
+        try:
+            with mock.patch.object(server.ThreadingHTTPServer, "serve_forever",
+                                   side_effect=AssertionError("must not serve on a taken port")):
+                rc = server.main(["--port", str(port), "--log-file", str(self.log)])
+        finally:
+            occupant.close()
+        return rc, port
+
+    def test_busy_port_is_logged_and_exits_1(self):
+        rc, port = self.run_on_busy_port(reuse=False)
+        self.assertEqual(rc, 1)
+        self.assertIn(f"cannot listen on 127.0.0.1:{port}", self.log.read_text(encoding="utf-8"))
+
+    def test_port_held_by_a_reuse_socket_is_busy_too(self):
+        # Windows SO_REUSEADDR lets a second server bind the same port and steal its requests.
+        rc, _ = self.run_on_busy_port(reuse=True)
+        self.assertEqual(rc, 1)
 
 
 if __name__ == "__main__":

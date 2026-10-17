@@ -302,6 +302,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if not isinstance(data.get("id"), str) or not recent.remove(data["id"]):
             return self._send_json({"error": "no such book in the list"}, HTTPStatus.NOT_FOUND)
+        with _books_lock:  # an old #book=<id> link must not bring it back into the list
+            _books.pop(data["id"], None)
         self._send_json({"removed": data["id"]})
 
     def _list_books(self):
@@ -343,22 +345,33 @@ class Handler(SimpleHTTPRequestHandler):
         log.debug(fmt, *args)
 
 
-def main():
+class ReaderServer(ThreadingHTTPServer):
+    # socketserver sets SO_REUSEADDR, and on Windows that lets a second copy bind a port
+    # that is already listening and take over part of its requests. A busy port must fail.
+    allow_reuse_address = False
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Local RSVP speed reader")
     parser.add_argument("--open", action="store_true", help="open the browser after start")
     parser.add_argument("--port", type=int, help="override `port` from config.json")
     parser.add_argument("--log-file", type=Path, help="log here instead of the console")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     log_kwargs = {}
     if args.log_file:
         args.log_file.parent.mkdir(parents=True, exist_ok=True)
         log_kwargs = {"filename": str(args.log_file), "encoding": "utf-8"}
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", **log_kwargs)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", force=True,
+                        **log_kwargs)
 
     config = load_config()
     port = args.port or config["port"]
     load_known_books()
-    server = ThreadingHTTPServer((HOST, port), Handler)
+    try:
+        server = ReaderServer((HOST, port), Handler)
+    except OSError:  # under pythonw the log file is the only place this can show up
+        log.exception("cannot listen on %s:%d (another copy of the reader already running?)", HOST, port)
+        return 1
     server.config = config
     url = f"http://{HOST}:{port}/"
     log.info("RSVP reader on %s (recent books: %d)", url, len(_books))
@@ -368,7 +381,8 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
