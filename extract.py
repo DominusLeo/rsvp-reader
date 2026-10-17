@@ -59,6 +59,10 @@ _CYRILLIC_ROMAN = str.maketrans("іхсм", "ixcm")  # after casefold
 # of the last - a few words per entry. Real chapters, even short ones, are further apart.
 CONTENTS_GAP_WORDS = 40
 CONTENTS_MIN_HEADINGS = 3
+# A contents that lists sections under each chapter is sparser (~90 words per entry on the
+# Desktop books, as far apart as short real chapters). Such a run is contents only if most of
+# its entries come back later as the text itself; short real chapters do not repeat.
+CONTENTS_SPARSE_GAP_WORDS = 300
 
 
 _SENTENCE_END = re.compile(r"[.!?…]$")
@@ -160,23 +164,42 @@ def _filter_headings(headings: list[dict]) -> list[dict]:
             # A number already listed in the run is the text itself starting ("Глава 1" right
             # after the contents): it ends the run and is not part of it.
             linked = (i is not None and run and keys[i] not in {keys[j] for j in run}
-                      and headings[i]["word"] - headings[run[-1]]["word"] <= CONTENTS_GAP_WORDS)
+                      and headings[i]["word"] - headings[run[-1]]["word"] <= CONTENTS_SPARSE_GAP_WORDS)
             if linked:
                 run.append(i)
                 continue
-            if len(run) >= CONTENTS_MIN_HEADINGS:
+            if len(run) >= CONTENTS_MIN_HEADINGS and _is_contents(run, keys, headings):
                 dropped.update(run)
             run = [i] if i is not None else []
     seen: set[tuple[str, str]] = set()
+    first: dict[str, tuple[str, str]] = {}  # kind -> key of its first kept heading
+    after_part = False
     kept = []
     for i, heading in enumerate(headings):
-        if i in dropped or keys[i] in seen:
+        if i in dropped:
             continue
-        if keys[i][0] == "part":  # chapter numbers may restart in every part
-            seen = {k for k in seen if k[0] == "part"}
+        kind = keys[i][0]
+        if after_part and kind != "part":
+            after_part = False
+            # Chapter numbers restart in a part only if the part's first heading is the very
+            # first number of the book again; "Part 1" inside a code listing restarts nothing.
+            if keys[i] == first.get(kind):
+                seen = {k for k in seen if k[0] == "part"}
+        if keys[i] in seen:
+            continue
+        after_part = after_part or kind == "part"
+        first.setdefault(kind, keys[i])
         seen.add(keys[i])
         kept.append(heading)
     return kept
+
+
+def _is_contents(run: list[int], keys: list[tuple[str, str]], headings: list[dict]) -> bool:
+    words = [headings[j]["word"] for j in run]
+    if max(b - a for a, b in zip(words, words[1:])) <= CONTENTS_GAP_WORDS:
+        return True
+    later = {keys[j] for j in range(run[-1] + 1, len(keys))}
+    return sum(keys[j] in later for j in run) * 2 > len(run)
 
 
 def build_book(pages: list[str], toc=None) -> dict:

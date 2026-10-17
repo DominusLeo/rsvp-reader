@@ -220,6 +220,21 @@ class ChaptersTest(unittest.TestCase):
         self.assertEqual([c["title"] for c in build_book([page])["chapters"]],
                          ["Частина I", "Глава 1", "Глава 2", "Частина II", "Глава 1", "Глава 2"])
 
+    def test_contents_with_sections_between_entries_is_dropped(self):
+        # Desktop programmist-pragmatik: contents lists sections under each chapter, so entries are
+        # ~90 words apart - as far as short real chapters. Contents entries come back later as text.
+        sections = "\n\n".join(["Підрозділ про речі 12"] * 22)  # 88 words
+        contents = f"Глава 1. А\n\n{sections}\n\nГлава 2. Б\n\n{sections}\n\nГлава 3. В"
+        body = "текст " * 400
+        pages = [contents, body, f"Глава 1\n\n{body}", f"Глава 2\n\n{body}", f"Глава 3\n\n{body}"]
+        self.assertEqual([c["title"] for c in build_book(pages)["chapters"]], ["Глава 1", "Глава 2", "Глава 3"])
+
+    def test_false_part_inside_text_does_not_restart_chapter_numbers(self):
+        # "Part 1" inside a code listing: chapter numbering does not start again after it.
+        body = "текст " * 400
+        page = f"Глава 1\n\n{body}\n\nГлава 2\n\n{body}\n\nPart 1\n\n{body}\n\nГлава 2 • Назва\n\n{body}"
+        self.assertEqual([c["title"] for c in build_book([page])["chapters"]], ["Глава 1", "Глава 2", "Part 1"])
+
     def test_cyrillic_roman_numerals_are_numbers(self):
         body = "текст " * 400
         page = f"Розділ І.\n\n{body}\n\nРозділ ІІ.\n\n{body}\n\nРозділ ІV\n\n{body}\n\nГлава Х.\n\n{body}"
