@@ -1,10 +1,13 @@
 """Text extraction and cleanup: run with `venv\\Scripts\\python -m unittest discover -s tests`."""
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pymupdf
 
+import extract as extract_module
 from extract import (
     build_book, clean_page, extract, extract_pages, page_paragraphs, parse_djvu_outline, tokenize,
 )
@@ -195,6 +198,39 @@ class ChaptersTest(unittest.TestCase):
         text = f"{LONG}\n{line}\n{LONG}\n{LONG}"
         self.assertEqual(len(page_paragraphs(text)), 1)
 
+    def test_contents_right_before_chapter_1_keeps_chapter_1(self):
+        # Review M-2: the real "Глава 1" repeats a number of the contents run, so it ends the run.
+        contents = "Глава 1. Вступ\n\nГлава 2. Далі\n\nГлава 3. Кінець"
+        body = "текст " * 400
+        pages = [contents, f"Глава 1\n\n{body}", f"Глава 2\n\n{body}", f"Глава 3\n\n{body}"]
+        self.assertEqual([(c["title"], c["word"]) for c in build_book(pages)["chapters"]],
+                         [("Глава 1", 9), ("Глава 2", 411), ("Глава 3", 813)])
+
+    def test_short_chapters_are_not_taken_for_contents(self):
+        # Review m-5: a contents listing is dense (a few words per entry); 100-word chapters are not.
+        body = "текст " * 100
+        pages = [f"Глава {n}\n\n{body}" for n in range(1, 5)]
+        self.assertEqual([(c["title"], c["word"]) for c in build_book(pages)["chapters"]],
+                         [("Глава 1", 0), ("Глава 2", 102), ("Глава 3", 204), ("Глава 4", 306)])
+
+    def test_chapter_numbers_restart_in_each_part(self):
+        body = "текст " * 400
+        page = (f"Частина I\n\nГлава 1\n\n{body}\n\nГлава 2\n\n{body}\n\n"
+                f"Частина II\n\nГлава 1\n\n{body}\n\nГлава 2\n\n{body}")
+        self.assertEqual([c["title"] for c in build_book([page])["chapters"]],
+                         ["Частина I", "Глава 1", "Глава 2", "Частина II", "Глава 1", "Глава 2"])
+
+    def test_cyrillic_roman_numerals_are_numbers(self):
+        body = "текст " * 400
+        page = f"Розділ І.\n\n{body}\n\nРозділ ІІ.\n\n{body}\n\nРозділ ІV\n\n{body}\n\nГлава Х.\n\n{body}"
+        self.assertEqual([c["title"] for c in build_book([page])["chapters"]],
+                         ["Розділ І.", "Розділ ІІ.", "Розділ ІV", "Глава Х."])
+
+    def test_cyrillic_and_latin_roman_numeral_are_the_same_heading(self):
+        body = "текст " * 400
+        page = f"Розділ ІІ.\n\n{body}\n\nРозділ II\n\n{body}"  # Cyrillic, then a Latin running header
+        self.assertEqual([c["title"] for c in build_book([page])["chapters"]], ["Розділ ІІ."])
+
     def test_toc_wins_over_heuristic(self):
         book = build_book(["Глава 1\n\nтекст."], toc=[[1, "Зміст", 1]])
         self.assertEqual([c["title"] for c in book["chapters"]], ["Зміст"])
@@ -221,6 +257,24 @@ class DjvuOutlineTest(unittest.TestCase):
 
     def test_malformed_input_does_not_raise(self):
         self.assertEqual(parse_djvu_outline('(bookmarks ("без кінця'), [])
+
+
+class DjvuOutlineDecodeTest(unittest.TestCase):
+    """djvu_outline() decodes djvused stdout: octal escapes (3.5.29) or raw UTF-8 (other builds)."""
+
+    def outline(self, stdout: bytes):
+        done = subprocess.CompletedProcess(["djvused"], 0, stdout, b"")
+        with mock.patch.object(extract_module, "_djvu_tool", return_value="djvused"), \
+                mock.patch.object(extract_module.subprocess, "run", return_value=done):
+            return extract_module.djvu_outline(Path("book.djvu"))
+
+    def test_raw_utf8_titles(self):
+        stdout = '(bookmarks ("Глава 1. Вступ" "#3") ("Розділ ІІ" "#9"))'.encode("utf-8")
+        self.assertEqual(self.outline(stdout), [[1, "Глава 1. Вступ", 3], [1, "Розділ ІІ", 9]])
+
+    def test_octal_escaped_titles(self):
+        self.assertEqual(self.outline(DJVU_OUTLINE.encode("ascii")), parse_djvu_outline(DJVU_OUTLINE))
+        self.assertEqual(self.outline(DJVU_OUTLINE.encode("ascii"))[0][1], 'Глава 1. Вступ "цитата" back\\slash')
 
 
 class ExtractPdfTest(unittest.TestCase):

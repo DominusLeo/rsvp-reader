@@ -47,18 +47,22 @@ _BLANK_LINE = re.compile(r"\n[ \t\r\f\v]*\n\s*")
 _WHITESPACE = re.compile(r"\s+")
 _HAS_CORE_CHAR = re.compile(r"[^\W_]")
 _TERMINAL = re.compile(r"[.!?…:»\"”]$")
+# Roman numerals are often typed with Cyrillic look-alikes: І (U+0406), Х, С, М.
+_ROMAN = "IVXLCDMІХСМ"
 _HEADING = re.compile(
-    r"^(глава|розділ|раздел|частина|часть|chapter|part)\s+([\dIVXLCDM]+|[а-яіїєґa-z]+)\b", re.IGNORECASE,
+    rf"^(глава|розділ|раздел|частина|часть|chapter|part)\s+([\d{_ROMAN}]+|[а-яіїєґa-z]+)\b", re.IGNORECASE,
 )
 _HEADING_KIND = {"глава": "chapter", "chapter": "chapter", "розділ": "section", "раздел": "section",
                  "частина": "part", "часть": "part", "part": "part"}
-# Printed contents: 3+ same-kind headings with different numbers, each within this many words of the last.
-CONTENTS_GAP_WORDS = 300
+_CYRILLIC_ROMAN = str.maketrans("іхсм", "ixcm")  # after casefold
+# Printed contents: 3+ same-kind headings with different numbers, each within this many words
+# of the last - a few words per entry. Real chapters, even short ones, are further apart.
+CONTENTS_GAP_WORDS = 40
 CONTENTS_MIN_HEADINGS = 3
 
 
 _SENTENCE_END = re.compile(r"[.!?…]$")
-_NUMBER = re.compile(r"[\dIVXLCDM]+", re.IGNORECASE)
+_NUMBER = re.compile(rf"[\d{_ROMAN}]+", re.IGNORECASE)
 
 
 def _is_heading(text: str) -> bool:
@@ -139,7 +143,10 @@ def _toc_chapters(toc, page_starts: list[int], total: int) -> list[dict]:
 
 def _heading_key(title: str) -> tuple[str, str]:
     m = _HEADING.match(title)
-    return _HEADING_KIND[m.group(1).casefold()], m.group(2).casefold()
+    number = m.group(2).casefold()
+    if _NUMBER.fullmatch(number):
+        number = number.translate(_CYRILLIC_ROMAN)  # "ІІ" (Cyrillic) == "II" (Latin)
+    return _HEADING_KIND[m.group(1).casefold()], number
 
 
 def _filter_headings(headings: list[dict]) -> list[dict]:
@@ -150,8 +157,10 @@ def _filter_headings(headings: list[dict]) -> list[dict]:
         idx = [i for i, k in enumerate(keys) if k[0] == kind]
         run: list[int] = []
         for i in idx + [None]:
-            linked = (i is not None and run and keys[i] != keys[run[-1]]
-                      and headings[i]["word"] - headings[run[-1]]["word"] < CONTENTS_GAP_WORDS)
+            # A number already listed in the run is the text itself starting ("Глава 1" right
+            # after the contents): it ends the run and is not part of it.
+            linked = (i is not None and run and keys[i] not in {keys[j] for j in run}
+                      and headings[i]["word"] - headings[run[-1]]["word"] <= CONTENTS_GAP_WORDS)
             if linked:
                 run.append(i)
                 continue
@@ -163,6 +172,8 @@ def _filter_headings(headings: list[dict]) -> list[dict]:
     for i, heading in enumerate(headings):
         if i in dropped or keys[i] in seen:
             continue
+        if keys[i][0] == "part":  # chapter numbers may restart in every part
+            seen = {k for k in seen if k[0] == "part"}
         seen.add(keys[i])
         kept.append(heading)
     return kept
@@ -261,7 +272,8 @@ def djvu_outline(path: Path) -> list:
     except (OSError, RuntimeError, subprocess.SubprocessError):
         log.exception("djvused print-outline failed: %s", path)
         return []
-    return parse_djvu_outline(result.stdout.decode("ascii", errors="replace"))
+    # DjVuLibre 3.5.29 escapes non-ASCII as octal \NNN; other builds print raw UTF-8.
+    return parse_djvu_outline(result.stdout.decode("utf-8", errors="replace"))
 
 
 # ---------- djvused s-expressions ----------
