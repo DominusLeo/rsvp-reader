@@ -1,16 +1,20 @@
 """Explorer integration on a fake registry: the real HKCU is never touched here."""
+import contextlib
 import io
 import json
 import tempfile
 import unittest
 import winreg
 from pathlib import Path
+from unittest import mock
 
 import explorer_integration as ei
 
-PYTHONW = Path(r"C:\Apps\rsvp\venv\Scripts\pythonw.exe")
-SCRIPT = Path(r"C:\Apps\rsvp\open_book.py")
-COMMAND = r'"C:\Apps\rsvp\venv\Scripts\pythonw.exe" "C:\Apps\rsvp\open_book.py" "%1"'
+# A space and Cyrillic in the path, as in "C:\Users\Art Leo\...": the quotes must hold.
+PYTHONW = Path(r"C:\Мої програми\rsvp\venv\Scripts\pythonw.exe")
+SCRIPT = Path(r"C:\Мої програми\rsvp\open_book.py")
+COMMAND = r'"C:\Мої програми\rsvp\venv\Scripts\pythonw.exe" "C:\Мої програми\rsvp\open_book.py" "%1"'
+CMD_KEY = r"RSVPReader.Book\shell\open\command"
 
 
 class FakeRegistry:
@@ -19,6 +23,7 @@ class FakeRegistry:
     def __init__(self):
         self.keys: dict[str, dict[str, tuple[int, object]]] = {}
         self.fail_after: int | None = None  # set_value calls allowed before an OSError
+        self.fail_deletes_after: int | None = None  # delete_value calls allowed before an OSError
 
     @staticmethod
     def _k(path):
@@ -44,6 +49,10 @@ class FakeRegistry:
         self.keys[self._k(path)][name.lower()] = (kind, data)
 
     def delete_value(self, path, name):
+        if self.fail_deletes_after is not None:
+            if self.fail_deletes_after == 0:
+                raise OSError("simulated registry failure")
+            self.fail_deletes_after -= 1
         del self.keys[self._k(path)][name.lower()]
 
     def is_empty(self, path):
@@ -142,13 +151,73 @@ class ExplorerIntegrationTest(unittest.TestCase):
         self.assertEqual(self.reg.get_value(r".pdf\OpenWithProgids", "MSEdgePDF"), (winreg.REG_NONE, b""))
         self.assertTrue(self.reg.key_exists(r"SystemFileAssociations\.pdf\shell"))
 
-    def test_uninstall_restores_a_value_we_overwrote(self):
+    def test_stale_value_in_our_namespace_is_not_restored(self):
+        # Review M-1: a value in our own keys is ours from an earlier install, not the user's.
         verb = r"SystemFileAssociations\.pdf\shell\RSVPReader"
         self.reg.set_value(verb, "MUIVerb", winreg.REG_SZ, "стара назва")
-        before = self.reg.snapshot()
         self.install()
         self.uninstall()
+        self.assertIsNone(self.reg.get_value(verb, "MUIVerb"))
+        self.assertFalse(self.reg.key_exists(verb))
+
+    def test_lost_manifest_then_reinstall_and_uninstall_removes_our_values(self):
+        self.install()
+        self.manifest.unlink()  # moved project folder, manifest deleted by hand
+        moved = ei.plan_entries(Path(r"D:\Нова тека\venv\Scripts\pythonw.exe"), Path(r"D:\Нова тека\open_book.py"))
+        ei.install(self.reg, self.manifest, moved, notify=self.notify, out=self.out)
+        self.uninstall()
+        self.assertIsNone(self.reg.get_value(CMD_KEY, ""))
+        self.assertFalse(self.reg.key_exists(ei.PROGID))
+        for ext in ei.EXTENSIONS:
+            with self.subTest(ext):
+                self.assertIsNone(self.reg.get_value(rf"{ext}\OpenWithProgids", ei.PROGID))
+                self.assertFalse(self.reg.key_exists(rf"SystemFileAssociations\{ext}\shell\RSVPReader"))
+
+    def test_uninstall_keeps_value_rewritten_by_another_install(self):
+        self.install()
+        other = r'"D:\Інша\pythonw.exe" "D:\Інша\open_book.py" "%1"'
+        self.reg.set_value(CMD_KEY, "", winreg.REG_SZ, other)
+        self.assertEqual(self.uninstall(), 0)
+        self.assertEqual(self.reg.get_value(CMD_KEY, ""), (winreg.REG_SZ, other))
+        self.assertIn(CMD_KEY, self.out.getvalue())
+
+    def test_empty_reg_none_read_back_as_none_still_matches(self):
+        # The real winreg returns None for a zero-length REG_NONE value that was written as b"".
+        self.install()
+        key = r".pdf\OpenWithProgids"
+        self.reg.keys[key.lower()][ei.PROGID.lower()] = (winreg.REG_NONE, None)
+        self.uninstall()
+        self.assertIsNone(self.reg.get_value(key, ei.PROGID))
+
+    def test_manifest_entry_without_previous_does_not_crash(self):
+        self.reg.set_value(CMD_KEY, "", winreg.REG_SZ, COMMAND)
+        self.manifest.write_text(json.dumps({"version": 1, "created_keys": [],
+                                             "values": [{"key": CMD_KEY, "name": ""}]}), encoding="utf-8")
+        self.assertEqual(self.uninstall(), 0)
+        self.assertIsNone(self.reg.get_value(CMD_KEY, ""))
+
+    def test_uninstall_is_idempotent_after_partial_failure(self):
+        self.preexisting()
+        before = self.reg.snapshot()
+        self.install()
+        self.reg.fail_deletes_after = 4
+        with self.assertRaises(OSError):
+            self.uninstall()
+        self.reg.fail_deletes_after = None
+        self.assertEqual(self.uninstall(), 0)
         self.assertEqual(self.reg.snapshot(), before)
+
+    def test_legacy_previous_is_restored_and_output_is_cp1251_safe(self):
+        key = r".pdf\OpenWithProgids"
+        self.reg.set_value(key, "Other.App", winreg.REG_SZ, "нове")
+        self.manifest.write_text(json.dumps({"version": 1, "created_keys": [], "values": [
+            {"key": key, "name": "Other.App", "previous": {"type": winreg.REG_SZ, "data": "старе"}}]}),
+            encoding="utf-8")
+        self.assertEqual(self.uninstall(), 0)
+        self.assertEqual(self.reg.get_value(key, "Other.App"), (winreg.REG_SZ, "старе"))
+        self.install()
+        self.uninstall(dry_run=True)
+        self.out.getvalue().encode("cp1251")  # a console in cp1251 must not raise UnicodeEncodeError
 
     def test_reinstall_then_uninstall_restores_original(self):
         self.preexisting()
@@ -215,6 +284,19 @@ class CliTest(unittest.TestCase):
         self.assertEqual(ei.parse_args(["uninstall"]).action, "uninstall")
         with self.assertRaises(SystemExit):
             ei.parse_args(["remove-everything"])
+
+    def test_main_reports_broken_manifest_without_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "explorer_install.json"
+            manifest.write_text("{broken", encoding="utf-8")
+            err = io.StringIO()
+            with mock.patch.object(ei, "MANIFEST_PATH", manifest), \
+                    mock.patch.object(ei, "WinRegistry", FakeRegistry), contextlib.redirect_stderr(err), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = ei.main(["uninstall"])
+        self.assertEqual(rc, 1)
+        self.assertIn("explorer_install.json", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
 
 
 if __name__ == "__main__":

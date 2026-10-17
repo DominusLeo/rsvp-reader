@@ -129,9 +129,25 @@ def _encode(value: tuple[int, object] | None) -> dict | None:
     if value is None:
         return None
     kind, data = value
-    if isinstance(data, (bytes, bytearray)):
-        return {"type": kind, "hex": bytes(data).hex()}
-    return {"type": kind, "data": data}  # str, int, list[str] or None
+    if data is None or isinstance(data, (bytes, bytearray)):
+        # winreg reads a zero-length binary/REG_NONE value back as None, not b"".
+        return {"type": kind, "hex": bytes(data or b"").hex()}
+    return {"type": kind, "data": data}  # str, int or list[str]
+
+
+def _own_key(key: str) -> bool:
+    """Keys that only this program uses: whatever is in them came from an install of ours."""
+    k = key.lower()
+    progid = PROGID.lower()
+    if k == progid or k.startswith(progid + "\\"):
+        return True
+    parts = k.split("\\")
+    return len(parts) >= 4 and parts[0] == "systemfileassociations" and parts[2] == "shell" \
+        and parts[3] == VERB_KEY.lower()
+
+
+def _own_value(key: str, name: str) -> bool:
+    return _own_key(key) or (key.lower().endswith("\\openwithprogids") and name.lower() == PROGID.lower())
 
 
 def _decode(stored: dict) -> tuple[int, object]:
@@ -166,8 +182,8 @@ def _show(name: str) -> str:
 def install(reg: Registry, manifest_path: Path, entries: list[Entry], notify=notify_shell,
             dry_run: bool = False, out: TextIO = sys.stdout) -> int:
     manifest = _load_manifest(manifest_path) or {"version": MANIFEST_VERSION, "created_keys": [], "values": []}
-    created = {k.lower() for k in manifest["created_keys"]}
-    recorded = {(v["key"].lower(), v["name"].lower()) for v in manifest["values"]}
+    created = {k.lower() for k in manifest.setdefault("created_keys", [])}
+    records = {(v["key"].lower(), v["name"].lower()): v for v in manifest.setdefault("values", [])}
     exists: dict[str, bool] = {}  # answers for keys this run will create, so a dry run sees them too
 
     for entry in entries:
@@ -175,16 +191,21 @@ def install(reg: Registry, manifest_path: Path, entries: list[Entry], notify=not
             lower = key.lower()
             if lower not in exists:
                 exists[lower] = reg.key_exists(key)
-            if not exists[lower]:
-                exists[lower] = True
-                if lower not in created:
-                    created.add(lower)
-                    manifest["created_keys"].append(key)
-                    print(f"+ розділ  HKCU\\Software\\Classes\\{key}", file=out)
-        if (entry.key.lower(), entry.name.lower()) not in recorded:
-            recorded.add((entry.key.lower(), entry.name.lower()))
-            previous = reg.get_value(entry.key, entry.name)
-            manifest["values"].append({"key": entry.key, "name": entry.name, "previous": _encode(previous)})
+            # Our own keys are listed even if they exist: they are left over from an install
+            # whose manifest was lost, and uninstall must still remove them.
+            if (not exists[lower] or _own_key(key)) and lower not in created:
+                created.add(lower)
+                manifest["created_keys"].append(key)
+                print(f"+ розділ  HKCU\\Software\\Classes\\{key}", file=out)
+            exists[lower] = True
+        record = records.get((entry.key.lower(), entry.name.lower()))
+        if record is None:
+            # A value in our own namespace is never the user's: nothing to restore later (review M-1).
+            previous = None if _own_value(entry.key, entry.name) else reg.get_value(entry.key, entry.name)
+            record = {"key": entry.key, "name": entry.name, "previous": _encode(previous)}
+            records[(entry.key.lower(), entry.name.lower())] = record
+            manifest["values"].append(record)
+        record["written"] = _encode((entry.kind, entry.data))
         shown = entry.data if isinstance(entry.data, str) else "(порожнє REG_NONE)"
         print(f"= значення {entry.key} [{_show(entry.name)}] = {shown}", file=out)
 
@@ -206,19 +227,29 @@ def uninstall(reg: Registry, manifest_path: Path, notify=notify_shell,
         print(f"Немає {manifest_path.name}: нічого скасовувати.", file=out)
         return 1
 
+    changed = []
     for value in reversed(manifest["values"]):
-        key, name, previous = value["key"], value["name"], value["previous"]
+        key, name = value["key"], value["name"]
+        previous, written = value.get("previous"), value.get("written")  # older manifests lack "written"
+        current = _encode(reg.get_value(key, name))
+        if current is None or current == previous:
+            continue  # already undone: a repeated uninstall after a partial failure
+        if written is not None and current != written:
+            # Someone (an install from another folder) wrote it after us: not ours to undo.
+            changed.append(key)
+            print(f"! значення {key} [{_show(name)}] змінене після нашого install, лишаю як є", file=out)
+            continue
         if previous is not None:
-            print(f"↺ значення {key} [{_show(name)}] -> попереднє", file=out)
+            print(f"~ значення {key} [{_show(name)}] -> попереднє", file=out)
             if not dry_run:
                 reg.set_value(key, name, *_decode(previous))
-        elif reg.get_value(key, name) is not None:
+        else:
             print(f"- значення {key} [{_show(name)}]", file=out)
             if not dry_run:
                 reg.delete_value(key, name)
 
     kept = []
-    for key in reversed(manifest["created_keys"]):  # children were created after their parents
+    for key in reversed(manifest.get("created_keys", [])):  # children were created after their parents
         if not reg.key_exists(key):
             continue
         if dry_run:
@@ -237,7 +268,9 @@ def uninstall(reg: Registry, manifest_path: Path, notify=notify_shell,
     notify()
     # Kept as a record of what was undone; a later install starts a fresh manifest.
     manifest_path.replace(manifest_path.with_name(f"{manifest_path.stem}.uninstalled.json"))
-    print("Готово." + (f" Лишилось розділів із чужими записами: {len(kept)}." if kept else ""), file=out)
+    notes = [f"лишилось розділів із чужими записами: {len(kept)}" if kept else "",
+             f"значень, змінених іншим install: {len(changed)}" if changed else ""]
+    print("Готово." + "".join(f" {n}." for n in notes if n), file=out)
     return 0
 
 
@@ -250,14 +283,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    for stream in (sys.stdout, sys.stderr):  # a cp1251/cp866 console must not crash on a symbol
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     reg = WinRegistry()
-    if args.action == "uninstall":
-        return uninstall(reg, MANIFEST_PATH, dry_run=args.dry_run)
-    missing = [p for p in (PYTHONW, LAUNCHER) if not p.is_file()]
-    if missing:
-        print("Не знайдено: " + ", ".join(map(str, missing)), file=sys.stderr)
+    try:
+        if args.action == "uninstall":
+            return uninstall(reg, MANIFEST_PATH, dry_run=args.dry_run)
+        missing = [p for p in (PYTHONW, LAUNCHER) if not p.is_file()]
+        if missing:
+            print("Не знайдено: " + ", ".join(map(str, missing)), file=sys.stderr)
+            return 1
+        return install(reg, MANIFEST_PATH, plan_entries(PYTHONW, LAUNCHER), dry_run=args.dry_run)
+    except (KeyError, TypeError, ValueError) as exc:  # json.JSONDecodeError is a ValueError
+        print(f"Пошкоджений {MANIFEST_PATH.name}: {type(exc).__name__}: {exc}. "
+              f"Перевірте файл у редакторі (він у теці проєкту) і повторіть команду.", file=sys.stderr)
         return 1
-    return install(reg, MANIFEST_PATH, plan_entries(PYTHONW, LAUNCHER), dry_run=args.dry_run)
+    except OSError as exc:
+        print(f"Помилка реєстру або файлу: {exc}. Повторіть команду: вона продовжить з місця збою.",
+              file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
